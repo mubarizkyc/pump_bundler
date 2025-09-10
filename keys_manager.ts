@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import inquirer from 'inquirer';
 import path from 'path';
 import bs58 from 'bs58';
-
+const NUM_WALLETS = 100;
 const keypairsDir = path.join(__dirname, 'keypairs');
 const keyInfoPath = path.join(__dirname, 'keyInfo.json');
 
@@ -72,7 +72,7 @@ export async function createKeypairs() {
     let wallets: Keypair[] = [];
 
     if (action === 'c') {
-        const numOfWallets = 2; // hardcoded
+        const numOfWallets = NUM_WALLETS; // hardcoded
         wallets = generateWallets(numOfWallets);
         wallets.forEach((wallet, index) => {
             saveKeypairToFile(wallet, index);

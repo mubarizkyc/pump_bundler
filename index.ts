@@ -1,5 +1,5 @@
 import { payer, connection, PUMP_PROGRAM, eventAuthority, rpc } from "./config";
-import { create_atas, fundWallets, fundWithWsol, createPumpToken } from "./utils"
+import { create_atas, fundWallets, fundWithWsol, createPumpToken, altCreator } from "./utils"
 import {
     PublicKey,
     VersionedTransaction,
@@ -9,7 +9,8 @@ import {
     SystemProgram,
     Keypair,
     LAMPORTS_PER_SOL,
-    Transaction
+    Transaction,
+    AccountMeta
 } from "@solana/web3.js";
 import {
     createInitializeMintInstruction,
@@ -42,112 +43,149 @@ then he creates ata for all othem which is a necessity
 
 
 export async function buyToken(mint: PublicKey, wsol_amount: number) {
-    // Load keypairs
     const keypairs: Keypair[] = loadKeypairs();
 
-    // Load JSON key info
-    let keyInfo: { [key: string]: { solAmount: number; tokenAmount: string } } = {};
-    if (fs.existsSync(keyInfoPath)) {
-        keyInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
-    }
+    // compute once
+    const global = await sdk.fetchGlobal();
+    const solAmount = new BN(wsol_amount);
+
+    console.log("Fetching buy state once...");
+    const { bondingCurveAccountInfo, bondingCurve } =
+        await sdk.fetchBuyState(mint, payer.publicKey); // use payer just to get curve
+    console.log("Got bonding curve info");
+
+    console.log("Computing token amount once...");
+    const amount = getBuyTokenAmountFromSolAmount({
+        global,
+        feeConfig: null,
+        mintSupply: null,
+        bondingCurve,
+        amount: solAmount,
+    });
+    console.log(`One buy = ${amount.toString()} tokens for ${wsol_amount} lamports`);
+
+    // budget ixs
     const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({
         units: 1_400_000,
     });
-
     const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: 1,
+        microLamports: 0,
     });
 
-    // Reuse single blockhash for all txns
-    const blockhash = await connection.getLatestBlockhash();
-    const global = await sdk.fetchGlobal();
 
     const txs: VersionedTransaction[] = [];
     let batch: TransactionInstruction[] = [];
     let signers: Keypair[] = [];
-    // push compute budget ixs at start
-    batch.push(modifyComputeUnits);
-    batch.push(addPriorityFee);
 
-    for (const kp of keypairs) {
-        /*
-        const info = keyInfo[kp.publicKey.toBase58()];
-        
-        if (!info) {
-            console.log(`No info for ${kp.publicKey.toBase58()}, skipping`);
-            continue;
-        }
-*/
-        //  const solAmount = new BN(info.solAmount * LAMPORTS_PER_SOL);
-        const solAmount = new BN(wsol_amount);
-        const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } =
-            await sdk.fetchBuyState(mint, kp.publicKey);
 
-        // Compute how many tokens this sol buys
-        const amount = getBuyTokenAmountFromSolAmount({
-            global,
-            feeConfig: null,
-            mintSupply: null,
-            bondingCurve,
-            amount: solAmount,
-        });
+    const ata_addresses = keypairs.map(kp => getAssociatedTokenAddressSync(mint, kp.publicKey));
+
+    const ata_infos = await connection.getMultipleAccountsInfo(ata_addresses);
+    const sample_buy_Ix = await sdk.buyInstructions({
+        global,
+        bondingCurveAccountInfo,
+        bondingCurve,
+        associatedUserAccountInfo: ata_infos[0],
+        mint,
+        user: payer.publicKey,
+        solAmount,
+        amount,
+        slippage: 1,
+    });
+    const uniquePubkeys: PublicKey[] = [
+        ...new Set(sample_buy_Ix.flatMap(ix => ix.keys.map(k => k.pubkey.toBase58())))
+    ].map(str => new PublicKey(str));
+
+    const lookupTableAddress = await altCreator(uniquePubkeys);
+    //const lookupTableAddress = new PublicKey("Dm1ztsirv4FKuH52ZNVZTh1bkzymUXWijNupKVgLcgz3");
+    const lookupTableAccount = (
+        await connection.getAddressLookupTable(lookupTableAddress)
+    ).value;
+    if (!lookupTableAccount) {
+        console.log("Failed to create alt");
+        return null;
+    }
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+
+    for (const [i, kp] of keypairs.entries()) {
+        //console.log(`\n=== Processing wallet ${i + 1}/${keypairs.length}: ${kp.publicKey.toBase58()} ===`);
+
+
+
+        //        console.log("Building buy instructions...");
 
         const buyIx = await sdk.buyInstructions({
             global,
             bondingCurveAccountInfo,
             bondingCurve,
-            associatedUserAccountInfo,
+            associatedUserAccountInfo: ata_infos[i],
             mint,
             user: kp.publicKey,
             solAmount,
             amount,
-            slippage: 1,
+            slippage: 2,
         });
+
+        //  console.log("Built buy instructions");
 
         batch.push(...buyIx);
         signers.push(kp);
 
-        // If batch reaches 4 buys, seal the transaction
-        if (signers.length === 4) {
+        // If batch reaches 3 buys, seal the transaction
+        if (signers.length === 3) {
+            console.log(`Sealing transaction with ${signers.length} signers...`);
+
             const msg = new TransactionMessage({
-                payerKey: payer.publicKey,  // global payer
-                recentBlockhash: blockhash.blockhash,
+                payerKey: payer.publicKey,
+                recentBlockhash: blockhash,
                 instructions: batch,
-            }).compileToV0Message();
+            }).compileToV0Message([lookupTableAccount]);
 
             const tx = new VersionedTransaction(msg);
             tx.sign([payer, ...signers]);
             txs.push(tx);
 
-            // reset
+            // reset for next batch
             batch = [];
             signers = [];
-            batch.push(modifyComputeUnits);
-            batch.push(addPriorityFee);
+
+            // refresh blockhash for next tx round
+            // ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash());
+            //    console.log(`Refreshed blockhash: ${blockhash}`);
         }
     }
 
-    // Handle leftover buys (<4)
     if (signers.length > 0) {
+        console.log(`Final leftover batch with ${signers.length} signers...`);
+
         const msg = new TransactionMessage({
             payerKey: payer.publicKey,
-            recentBlockhash: blockhash.blockhash,
+            recentBlockhash: blockhash,
             instructions: batch,
-        }).compileToV0Message();
+        }).compileToV0Message([lookupTableAccount]); // ✅ use lookup table
 
         const tx = new VersionedTransaction(msg);
         tx.sign([payer, ...signers]);
         txs.push(tx);
     }
 
-    console.log(`Prepared ${txs.length} transactions`);
+    console.log(`\nPrepared ${txs.length} transactions`);
 
-    // Fire all at once (no confirmation wait)
+    console.log("Sending transactions...");
     const sigs = await Promise.all(
-        txs.map(tx => connection.sendTransaction(tx, { skipPreflight: true }))
+        txs.map(async (tx, i) => {
+            console.log(`Sending tx ${i + 1}/${txs.length}...`);
+            return await connection.sendTransaction(tx, {
+                skipPreflight: true,
+                maxRetries: 0,
+            });
+        })
     );
 
-    sigs.forEach(sig => console.log(`Sent tx: ${sig}`));
+    console.log("All transactions sent:");
+    sigs.forEach(sig => console.log(` - ${sig}`));
+
+    return sigs;
 }
 
 async function main() {
@@ -155,18 +193,22 @@ async function main() {
     await createKeypairs();
 
     //create atas;
-    const token_mint = await createPumpToken();
-    await create_atas(token_mint);
-    console.log("Created x token accounts for all wallets");
+    // const token_mint = await createPumpToken();
+    const token_mint = new PublicKey("97aWsdR3FoCtgNKZLjCjU9zbybQjtjVxtFkbY48ceLBJ");
+    /*
+        await create_atas(token_mint);
+        console.log("Created x token accounts for all wallets");
+    
+        await create_atas(wsol_mint);
+        console.log("Created wsol token accounts for all wallets");
+        //fund wallets with sol
+        await fundWallets(10000000); //transfer 0.001 sol
+        console.log("wallets funded wiht sol");
+        await fundWithWsol(10000); //transfer 0.00001 wsol
+        console.log("wallets funded with wsol");
+    */
+    await buyToken(token_mint, 100);
 
-    await create_atas(wsol_mint);
-    console.log("Created wsol token accounts for all wallets");
-    //fund wallets with sol
-    await fundWallets(10000000); //transfer 0.01 sol
-    console.log("wallets funded wiht sol");
-    await fundWithWsol(10000); //transfer 0.00001 wsol
-    console.log("wallets funded with wsol");
-    await buyToken(token_mint, 10000);
     console.log("tokens bought");
 
 }

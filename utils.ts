@@ -8,7 +8,8 @@ import {
     SystemProgram,
     Keypair,
     LAMPORTS_PER_SOL,
-    Transaction
+    Transaction,
+    AddressLookupTableProgram
 } from "@solana/web3.js";
 import {
     createInitializeMintInstruction,
@@ -33,6 +34,7 @@ const keyInfoPath = "./keyInfo.json";
 const TOKEN_PROGRAM = TOKEN_PROGRAM_ID;
 const sdk = new PumpSdk(connection);
 const wsol_mint = new PublicKey("So11111111111111111111111111111111111111112");
+
 /*
 Flow 
 User Creates 100 wallets they stay there
@@ -45,7 +47,7 @@ export async function create_atas(mint: PublicKey) {
     });
 
     const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: 1,
+        microLamports: 0,
     });
 
     const keypairs: Keypair[] = loadKeypairs();
@@ -265,4 +267,56 @@ export async function createPumpToken(): Promise<PublicKey> {
     console.log("Created token tx:", sig);
 
     return mintKp.publicKey;
+}
+export async function altCreator(addresses: PublicKey[]): Promise<PublicKey> {
+    const slot = await connection.getSlot();
+    const blockhash = await connection.getLatestBlockhash();
+
+    // 1. Create ALT
+    const [createIx, lookupTableAddress] =
+        AddressLookupTableProgram.createLookupTable({
+            authority: payer.publicKey,
+            payer: payer.publicKey,
+            recentSlot: slot,
+        });
+
+    const createMsg = new TransactionMessage({
+        payerKey: payer.publicKey,
+        recentBlockhash: blockhash.blockhash,
+        instructions: [createIx],
+    }).compileToV0Message();
+
+    const createTx = new VersionedTransaction(createMsg);
+    createTx.sign([payer]);
+    const sig1 = await connection.sendTransaction(createTx, { skipPreflight: true });
+    console.log(`Created ALT at ${lookupTableAddress.toBase58()}, sig: ${sig1}`);
+
+    // Wait for confirmation before extend
+    await connection.confirmTransaction({
+        signature: sig1,
+        blockhash: blockhash.blockhash,
+        lastValidBlockHeight: blockhash.lastValidBlockHeight,
+    });
+
+    // 2. Extend ALT with addresses
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+        payer: payer.publicKey,
+        authority: payer.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses,
+    });
+
+    const extendBlockhash = await connection.getLatestBlockhash();
+    const extendMsg = new TransactionMessage({
+        payerKey: payer.publicKey,
+        recentBlockhash: extendBlockhash.blockhash,
+        instructions: [extendIx],
+    }).compileToV0Message();
+
+    const extendTx = new VersionedTransaction(extendMsg);
+    extendTx.sign([payer]);
+    const sig2 = await connection.sendTransaction(extendTx, { skipPreflight: true });
+    console.log(`Extended ALT with ${addresses.length} addresses, sig: ${sig2}`);
+
+    return lookupTableAddress;
 }
