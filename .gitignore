@@ -1,0 +1,21 @@
+# Node.js
+node_modules/
+dist/
+build/
+.cache/
+*.log
+
+# Key material & configs
+keypairs/
+*.json
+*.tsbuildinfo
+
+# Local environment & system files
+.env
+.DS_Store
+*.swp
+*.swo
+
+# Package lock files (optional, if you don’t want them in git)
+package-lock.json
+yarn.lock

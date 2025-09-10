@@ -122,167 +122,7 @@ export async function create_atas(mint: PublicKey) {
     }
 }
 
-export async function buyToken(mint: PublicKey) {
-    // Load keypairs
-    const keypairs: Keypair[] = loadKeypairs();
-
-    // Load JSON key info
-    let keyInfo: { [key: string]: { solAmount: number; tokenAmount: string } } = {};
-    if (fs.existsSync(keyInfoPath)) {
-        keyInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
-    }
-    const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({
-        units: 1_400_000,
-    });
-
-    const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
-        microLamports: 100,
-    });
-
-    // Reuse single blockhash for all txns
-    const blockhash = await connection.getLatestBlockhash();
-    const global = await sdk.fetchGlobal();
-
-    const txs: VersionedTransaction[] = [];
-    let batch: TransactionInstruction[] = [];
-    let signers: Keypair[] = [];
-    // push compute budget ixs at start
-    batch.push(modifyComputeUnits);
-    batch.push(addPriorityFee);
-
-    for (const kp of keypairs) {
-        const info = keyInfo[kp.publicKey.toBase58()];
-        if (!info) {
-            console.log(`No info for ${kp.publicKey.toBase58()}, skipping`);
-            continue;
-        }
-
-        const solAmount = new BN(info.solAmount * LAMPORTS_PER_SOL);
-        const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } =
-            await sdk.fetchBuyState(mint, kp.publicKey);
-
-        // Compute how many tokens this sol buys
-        const amount = getBuyTokenAmountFromSolAmount({
-            global,
-            feeConfig: null,
-            mintSupply: null,
-            bondingCurve,
-            amount: solAmount,
-        });
-
-        const buyIx = await sdk.buyInstructions({
-            global,
-            bondingCurveAccountInfo,
-            bondingCurve,
-            associatedUserAccountInfo,
-            mint,
-            user: kp.publicKey,
-            solAmount,
-            amount,
-            slippage: 1,
-        });
-
-        batch.push(...buyIx);
-        signers.push(kp);
-
-        // If batch reaches 4 buys, seal the transaction
-        if (signers.length === 4) {
-            const msg = new TransactionMessage({
-                payerKey: payer.publicKey,  // global payer
-                recentBlockhash: blockhash.blockhash,
-                instructions: batch,
-            }).compileToV0Message();
-
-            const tx = new VersionedTransaction(msg);
-            tx.sign([payer, ...signers]);
-            txs.push(tx);
-
-            // reset
-            batch = [];
-            signers = [];
-            batch.push(modifyComputeUnits);
-            batch.push(addPriorityFee);
-        }
-    }
-
-    // Handle leftover buys (<4)
-    if (signers.length > 0) {
-        const msg = new TransactionMessage({
-            payerKey: payer.publicKey,
-            recentBlockhash: blockhash.blockhash,
-            instructions: batch,
-        }).compileToV0Message();
-
-        const tx = new VersionedTransaction(msg);
-        tx.sign([payer, ...signers]);
-        txs.push(tx);
-    }
-
-    console.log(`Prepared ${txs.length} transactions`);
-
-    // Fire all at once (no confirmation wait)
-    const sigs = await Promise.all(
-        txs.map(tx => connection.sendTransaction(tx, { skipPreflight: true }))
-    );
-
-    sigs.forEach(sig => console.log(`Sent tx: ${sig}`));
-}
-async function fundWallets(lamports: number, bufferPct: number = 0) {
-    const keypairs: Keypair[] = loadKeypairs();
-
-    const blockhash = await connection.getLatestBlockhash();
-    const adjustedLamports = Math.floor(lamports * (1 + bufferPct));
-    const txs: VersionedTransaction[] = [];
-    let batch: TransactionInstruction[] = [];
-
-    for (const kp of keypairs) {
-        const ix = SystemProgram.transfer({
-            fromPubkey: payer.publicKey,
-            toPubkey: kp.publicKey,
-            lamports,
-        });
-        batch.push(ix);
-
-        // pack up to 10 transfers per tx (safe size)
-        if (batch.length === 10) {
-            const msg = new TransactionMessage({
-                payerKey: payer.publicKey,
-                recentBlockhash: blockhash.blockhash,
-                instructions: batch,
-            }).compileToV0Message();
-
-            const tx = new VersionedTransaction(msg);
-            tx.sign([payer]);
-            txs.push(tx);
-            batch = [];
-        }
-    }
-
-    // handle leftover transfers
-    if (batch.length > 0) {
-        const msg = new TransactionMessage({
-            payerKey: payer.publicKey,
-            recentBlockhash: blockhash.blockhash,
-            instructions: batch,
-        }).compileToV0Message();
-
-        const tx = new VersionedTransaction(msg);
-        tx.sign([payer]);
-        txs.push(tx);
-    }
-
-    console.log(`Prepared ${txs.length} funding transactions`);
-
-    // fire them all at once
-    const sigs = await Promise.all(
-        txs.map(tx => connection.sendTransaction(tx, { skipPreflight: true }))
-    );
-
-    sigs.forEach(sig => console.log(`Funded wallets tx: ${sig}`));
-
-    return sigs;
-}
-async function fundWithWsol(amount: number) {
+export async function fundWithWsol(amount: number) {
     const keypairs: Keypair[] = loadKeypairs();
 
     const blockhash = await connection.getLatestBlockhash();
@@ -342,23 +182,87 @@ async function fundWithWsol(amount: number) {
 
     return sigs;
 }
+export async function fundWallets(lamports: number, bufferPct: number = 0) {
+    const keypairs: Keypair[] = loadKeypairs();
 
-async function main() {
-    //create keypairs
-    await createKeypairs();
-    //create atas;
-    const token_mint = new PublicKey("BvTxDL4VMYEzFHHWepSUGnVrouwtTrsgyqRp3gqJUqzp");
-    await create_atas(token_mint);
-    console.log("Created x token accounts for all wallets");
+    const blockhash = await connection.getLatestBlockhash();
+    const adjustedLamports = Math.floor(lamports * (1 + bufferPct));
+    const txs: VersionedTransaction[] = [];
+    let batch: TransactionInstruction[] = [];
 
-    await create_atas(wsol_mint);
-    console.log("Created wsol token accounts for all wallets");
-    //fund wallets with sol
-    //  await fundWallets(1000000); //transfer 0.001 sol
-    //console.log("wallets funded wiht sol");
-    await fundWithWsol(100000); //transfer 0.0001 wsol
-    console.log("wallets funded with wsol");
+    for (const kp of keypairs) {
+        const ix = SystemProgram.transfer({
+            fromPubkey: payer.publicKey,
+            toPubkey: kp.publicKey,
+            lamports,
+        });
+        batch.push(ix);
 
+        // pack up to 10 transfers per tx (safe size)
+        if (batch.length === 10) {
+            const msg = new TransactionMessage({
+                payerKey: payer.publicKey,
+                recentBlockhash: blockhash.blockhash,
+                instructions: batch,
+            }).compileToV0Message();
 
+            const tx = new VersionedTransaction(msg);
+            tx.sign([payer]);
+            txs.push(tx);
+            batch = [];
+        }
+    }
+
+    // handle leftover transfers
+    if (batch.length > 0) {
+        const msg = new TransactionMessage({
+            payerKey: payer.publicKey,
+            recentBlockhash: blockhash.blockhash,
+            instructions: batch,
+        }).compileToV0Message();
+
+        const tx = new VersionedTransaction(msg);
+        tx.sign([payer]);
+        txs.push(tx);
+    }
+
+    console.log(`Prepared ${txs.length} funding transactions`);
+
+    // fire them all at once
+    const sigs = await Promise.all(
+        txs.map(tx => connection.sendTransaction(tx, { skipPreflight: true }))
+    );
+
+    sigs.forEach(sig => console.log(`Funded wallets tx: ${sig}`));
+
+    return sigs;
 }
-main();
+//for testing purposes
+export async function createPumpToken(): Promise<PublicKey> {
+    const mintKp = Keypair.generate(); // new mint account
+    const blockhash = await connection.getLatestBlockhash();
+
+    // Build the instruction (assuming SDK handles initialization)
+    const ix = await sdk.createInstruction({
+        mint: mintKp.publicKey,
+        name: "name",
+        symbol: "symbol",
+        uri: "uri",
+        creator: payer.publicKey,
+        user: payer.publicKey,
+    });
+
+    const msg = new TransactionMessage({
+        payerKey: payer.publicKey,
+        recentBlockhash: blockhash.blockhash,
+        instructions: [ix],
+    }).compileToV0Message();
+
+    const tx = new VersionedTransaction(msg);
+    tx.sign([payer, mintKp]); // ✅ both payer + mint authority
+
+    const sig = await connection.sendTransaction(tx, { skipPreflight: true });
+    console.log("Created token tx:", sig);
+
+    return mintKp.publicKey;
+}
