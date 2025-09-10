@@ -15,6 +15,8 @@ keypairs/
 .DS_Store
 *.swp
 *.swo
+pumpfun-IDL.json
+proposal.js
 
 # Package lock files (optional, if you don’t want them in git)
 package-lock.json
