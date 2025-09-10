@@ -92,6 +92,7 @@ export async function buyToken(mint: PublicKey, wsol_amount: number) {
         amount,
         slippage: 1,
     });
+    /*
     const uniquePubkeys: PublicKey[] = [
         ...new Set(sample_buy_Ix.flatMap(ix => ix.keys.map(k => k.pubkey.toBase58())))
     ].map(str => new PublicKey(str));
@@ -105,6 +106,7 @@ export async function buyToken(mint: PublicKey, wsol_amount: number) {
         console.log("Failed to create alt");
         return null;
     }
+    */
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
 
     for (const [i, kp] of keypairs.entries()) {
@@ -131,15 +133,15 @@ export async function buyToken(mint: PublicKey, wsol_amount: number) {
         batch.push(...buyIx);
         signers.push(kp);
 
-        // If batch reaches 3 buys, seal the transaction
-        if (signers.length === 3) {
+        // If batch reaches 2 buys, seal the transaction
+        if (signers.length === 2) {
             console.log(`Sealing transaction with ${signers.length} signers...`);
 
             const msg = new TransactionMessage({
                 payerKey: payer.publicKey,
                 recentBlockhash: blockhash,
                 instructions: batch,
-            }).compileToV0Message([lookupTableAccount]);
+            }).compileToV0Message();
 
             const tx = new VersionedTransaction(msg);
             tx.sign([payer, ...signers]);
@@ -162,7 +164,7 @@ export async function buyToken(mint: PublicKey, wsol_amount: number) {
             payerKey: payer.publicKey,
             recentBlockhash: blockhash,
             instructions: batch,
-        }).compileToV0Message([lookupTableAccount]); // ✅ use lookup table
+        }).compileToV0Message(); // ✅ use lookup table
 
         const tx = new VersionedTransaction(msg);
         tx.sign([payer, ...signers]);
@@ -195,18 +197,18 @@ async function main() {
     //create atas;
     // const token_mint = await createPumpToken();
     const token_mint = new PublicKey("97aWsdR3FoCtgNKZLjCjU9zbybQjtjVxtFkbY48ceLBJ");
-    /*
-        await create_atas(token_mint);
-        console.log("Created x token accounts for all wallets");
-    
-        await create_atas(wsol_mint);
-        console.log("Created wsol token accounts for all wallets");
-        //fund wallets with sol
-        await fundWallets(10000000); //transfer 0.001 sol
-        console.log("wallets funded wiht sol");
-        await fundWithWsol(10000); //transfer 0.00001 wsol
-        console.log("wallets funded with wsol");
-    */
+
+    await create_atas(token_mint);
+    console.log("Created x token accounts for all wallets");
+
+    await create_atas(wsol_mint);
+    console.log("Created wsol token accounts for all wallets");
+    //fund wallets with sol
+    await fundWallets(10000000);
+    console.log("wallets funded wiht sol");
+    await fundWithWsol(100);
+    console.log("wallets funded with wsol");
+
     await buyToken(token_mint, 100);
 
     console.log("tokens bought");
